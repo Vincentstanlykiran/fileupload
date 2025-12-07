@@ -1,13 +1,9 @@
-version: "3.9"
-
 services:
 
-  fastapi_app:
-    build: .
+  fastapi:
+    build:
+      context: .
     container_name: fastapi_app
-    depends_on:
-      - minio
-      - redis
     ports:
       - "8000:8000"
     environment:
@@ -15,30 +11,51 @@ services:
       MINIO_ACCESS_KEY: "minioadmin"
       MINIO_SECRET_KEY: "minioadmin"
       REDIS_HOST: "redis"
+    depends_on:
+      - redis
+      - minio
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
+
+  celery:
+    build:
+      context: .
+    container_name: celery_worker
+    depends_on:
+      - fastapi
+      - redis
+      - minio
+    environment:
+      MINIO_ENDPOINT: "minio:9000"
+      MINIO_ACCESS_KEY: "minioadmin"
+      MINIO_SECRET_KEY: "minioadmin"
+      REDIS_HOST: "redis"
+    command: celery -A celery_app.celery_app worker --loglevel=info
+
+  redis:
+    image: redis:7
+    container_name: redis_server
+    ports:
+      - "6379:6379"
     volumes:
-      - .:/app
+      - redis_data:/data   # optional: make Redis persistent too
 
   minio:
     image: minio/minio
-    container_name: minio
-    command: server /data --console-address ":9001"
+    container_name: minio_server
     environment:
       MINIO_ROOT_USER: "minioadmin"
       MINIO_ROOT_PASSWORD: "minioadmin"
+    command: server /data --console-address ":9001"
     ports:
       - "9000:9000"
       - "9001:9001"
     volumes:
-      - minio_data:/data
+      - minio_data:/data   # 🔥 persistent MinIO storage
 
-  redis:
-    image: redis:latest
-    container_name: redis
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
 
+# -----------------------------------------
+# VOLUMES (Created automatically by Docker)
+# -----------------------------------------
 volumes:
-  minio_data:
-  redis_data:
+  minio_data:     # stores all uploaded files safely
+  redis_data:     # optional (stores redis data if needed)

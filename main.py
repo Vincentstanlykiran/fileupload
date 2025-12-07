@@ -7,8 +7,9 @@ import uuid
 import os
 from pydantic import BaseModel
 from io import BytesIO
+from tasks import process_file_task   # 🔥 Celery Task Import
 
-app = FastAPI(title="FastAPI + MinIO + Redis Microservice")
+app = FastAPI(title="FastAPI + MinIO + Redis + Celery Microservice")
 
 # -------------------------------
 # JWT Setup
@@ -30,13 +31,11 @@ def login(data: LoginModel):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     token = access_security.create_access_token(
-        subject={"username": data.username}  # Fastapi_jwt requires dict
+        subject={"username": data.username}
     )
-
     return {"access_token": token}
 
 
-# Authentication dependency
 def authenticate(credentials: JwtAuthorizationCredentials = Depends(access_security)):
     return True
 
@@ -56,7 +55,6 @@ minio_client = Minio(
     secure=False
 )
 
-# Ensure bucket exists
 if not minio_client.bucket_exists(MINIO_BUCKET):
     minio_client.make_bucket(MINIO_BUCKET)
 
@@ -69,7 +67,7 @@ redis_client = redis.Redis(host=REDIS_HOST, port=6379, db=0)
 
 
 # -------------------------------
-# Upload File
+# Upload File + Trigger Celery Task
 # -------------------------------
 @app.post("/upload")
 async def upload_file(folder: str, file: UploadFile, auth=Depends(authenticate)):
@@ -78,8 +76,6 @@ async def upload_file(folder: str, file: UploadFile, auth=Depends(authenticate))
         file_data = await file.read()
 
         object_name = f"{folder}/{file_id}"
-
-        # convert bytes to stream
         stream = BytesIO(file_data)
 
         minio_client.put_object(
@@ -92,7 +88,15 @@ async def upload_file(folder: str, file: UploadFile, auth=Depends(authenticate))
 
         redis_client.set(file_id, f"{folder}|{file.filename}")
 
-        return {"file_id": file_id, "folder": folder, "filename": file.filename}
+        # 🔥 Trigger Celery task
+        process_file_task.delay(file_id, folder)
+
+        return {
+            "file_id": file_id,
+            "folder": folder,
+            "filename": file.filename,
+            "message": "Upload successful — background processing started."
+        }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -110,6 +114,7 @@ async def get_file_metadata(file_id: str, auth=Depends(authenticate)):
 
         folder, filename = data.decode().split("|")
         object_name = f"{folder}/{file_id}"
+
         response = minio_client.get_object(MINIO_BUCKET, object_name)
 
         return {
@@ -147,3 +152,14 @@ async def download_file(file_id: str, auth=Depends(authenticate)):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# -------------------------------
+# Celery Task Status Check
+# -------------------------------
+@app.get("/status/{file_id}")
+async def get_status(file_id: str):
+    result = redis_client.get(f"{file_id}:processed")
+    if result:
+        return {"file_id": file_id, "processed_size": result.decode()}
+    return {"status": "Processing..."}
