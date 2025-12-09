@@ -58,4 +58,4 @@ services:
 # -----------------------------------------
 volumes:
   minio_data:     # stores all uploaded files safely
-  redis_data:     # optional (stores redis data if needed)
+  redis_data:     # optional (stores redis data if needed
